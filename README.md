@@ -1,10 +1,10 @@
 # screenshot-to-code
 
-This simple app converts a screenshot to code (HTML/Tailwind CSS, or React or Vue or Bootstrap). It uses GPT-4 Vision to generate the code and DALL-E 3 to generate similar-looking images. You can now also enter a URL to clone a live website!
+This simple app converts a screenshot to code (HTML/Tailwind CSS, or React or Bootstrap or Vue). It uses GPT-4 Vision to generate the code and DALL-E 3 to generate similar-looking images. You can now also enter a URL to clone a live website!
 
 https://github.com/abi/screenshot-to-code/assets/23818/6cebadae-2fe3-4986-ac6a-8fb9db030045
 
-See the [Examples](#examples) section below for more demos.
+See the [Examples](#-examples) section below for more demos.
 
 ## 🚀 Try It Out!
 
@@ -12,7 +12,10 @@ See the [Examples](#examples) section below for more demos.
 
 ## 🌟 Recent Updates
 
-- Nov 28 - 🔥 🔥 🔥 Get output code in React or Bootstrap or TailwindCSS
+- Dec 11 - Start a new project from existing code (allows you to come back to an older project)
+- Dec 7 - 🔥 🔥 🔥 View a history of your edits, and branch off them
+- Nov 30 - Dark mode, output code in Ionic (thanks [@dialmedu](https://github.com/dialmedu)), set OpenAI base URL
+- Nov 28 - 🔥 🔥 🔥 Customize your stack: React or Bootstrap or TailwindCSS
 - Nov 23 - Send in a screenshot of the current replicated version (sometimes improves quality of subsequent generations)
 - Nov 21 - Edit code in the code editor and preview changes live thanks to [@clean99](https://github.com/clean99)
 - Nov 20 - Paste in a URL to screenshot and clone (requires [ScreenshotOne free API key](https://screenshotone.com?via=screenshot-to-code))
@@ -35,6 +38,12 @@ poetry shell
 poetry run uvicorn main:app --reload --port 7001
 ```
 
+You can also run the backend (when you're in `backend`):
+
+```bash
+poetry run pyright
+```
+
 Run the frontend:
 
 ```bash
@@ -52,6 +61,10 @@ For debugging purposes, if you don't want to waste GPT4-Vision credits, you can 
 ```bash
 MOCK=true poetry run uvicorn main:app --reload --port 7001
 ```
+
+## Configuration
+
+- You can configure the OpenAI base URL if you need to use a proxy: Set OPENAI_BASE_URL in the `backend/.env` or directly in the UI in the settings dialog
 
 ## Docker
 

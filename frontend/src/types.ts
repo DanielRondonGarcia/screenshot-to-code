@@ -1,30 +1,20 @@
+import { Stack } from "./lib/stacks";
+
 export enum EditorTheme {
   ESPRESSO = "espresso",
   COBALT = "cobalt",
 }
 
-export enum CSSOption {
-  TAILWIND = "tailwind",
-  BOOTSTRAP = "bootstrap",
-}
-
-export enum JSFrameworkOption {
-  VANILLA = "vanilla",
-  REACT = "react",
-  VUE = "vue",
-}
-
-export interface OutputSettings {
-  css: CSSOption;
-  js: JSFrameworkOption;
-}
-
 export interface Settings {
   openAiApiKey: string | null;
+  openAiBaseURL: string | null;
   screenshotOneApiKey: string | null;
   isImageGenerationEnabled: boolean;
   editorTheme: EditorTheme;
-  isTermOfServiceAccepted: boolean; // Only relevant for hosted version
+  generatedCodeConfig: Stack;
+  // Only relevant for hosted version
+  isTermOfServiceAccepted: boolean;
+  accessCode: string | null;
 }
 
 export enum AppState {
@@ -32,3 +22,13 @@ export enum AppState {
   CODING = "CODING",
   CODE_READY = "CODE_READY",
 }
+
+export interface CodeGenerationParams {
+  generationType: "create" | "update";
+  image: string;
+  resultImage?: string;
+  history?: string[];
+  isImportedFromCode?: boolean;
+}
+
+export type FullGenerationSettings = CodeGenerationParams & Settings;

@@ -1,8 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ImageUpload from "./components/ImageUpload";
 import CodePreview from "./components/CodePreview";
 import Preview from "./components/Preview";
-import { CodeGenerationParams, generateCode } from "./generateCode";
+import { generateCode } from "./generateCode";
 import Spinner from "./components/Spinner";
 import classNames from "classnames";
 import {
@@ -18,14 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import SettingsDialog from "./components/SettingsDialog";
-import {
-  Settings,
-  EditorTheme,
-  AppState,
-  CSSOption,
-  OutputSettings,
-  JSFrameworkOption,
-} from "./types";
+import { AppState, CodeGenerationParams, EditorTheme, Settings } from "./types";
 import { IS_RUNNING_ON_CLOUD } from "./config";
 import { PicoBadge } from "./components/PicoBadge";
 import { OnboardingNote } from "./components/OnboardingNote";
@@ -36,32 +29,61 @@ import html2canvas from "html2canvas";
 import { USER_CLOSE_WEB_SOCKET_CODE } from "./constants";
 import CodeTab from "./components/CodeTab";
 import OutputSettingsSection from "./components/OutputSettingsSection";
+import { History } from "./components/history/history_types";
+import HistoryDisplay from "./components/history/HistoryDisplay";
+import { extractHistoryTree } from "./components/history/utils";
+import toast from "react-hot-toast";
+import ImportCodeSection from "./components/ImportCodeSection";
+import { Stack } from "./lib/stacks";
+
+const IS_OPENAI_DOWN = false;
 
 function App() {
   const [appState, setAppState] = useState<AppState>(AppState.INITIAL);
   const [generatedCode, setGeneratedCode] = useState<string>("");
+
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
   const [executionConsole, setExecutionConsole] = useState<string[]>([]);
   const [updateInstruction, setUpdateInstruction] = useState("");
-  const [history, setHistory] = useState<string[]>([]);
+  const [isImportedFromCode, setIsImportedFromCode] = useState<boolean>(false);
+
+  // Settings
   const [settings, setSettings] = usePersistedState<Settings>(
     {
       openAiApiKey: null,
+      openAiBaseURL: null,
       screenshotOneApiKey: null,
       isImageGenerationEnabled: true,
       editorTheme: EditorTheme.COBALT,
+      generatedCodeConfig: Stack.HTML_TAILWIND,
+      // Only relevant for hosted version
       isTermOfServiceAccepted: false,
+      accessCode: null,
     },
     "setting"
   );
-  const [outputSettings, setOutputSettings] = useState<OutputSettings>({
-    css: CSSOption.TAILWIND,
-    js: JSFrameworkOption.VANILLA,
-  });
+
+  // App history
+  const [appHistory, setAppHistory] = useState<History>([]);
+  // Tracks the currently shown version from app history
+  const [currentVersion, setCurrentVersion] = useState<number | null>(null);
+
   const [shouldIncludeResultImage, setShouldIncludeResultImage] =
     useState<boolean>(false);
 
   const wsRef = useRef<WebSocket>(null);
+
+  // When the user already has the settings in local storage, newly added keys
+  // do not get added to the settings so if it's falsy, we populate it with the default
+  // value
+  useEffect(() => {
+    if (!settings.generatedCodeConfig) {
+      setSettings((prev) => ({
+        ...prev,
+        generatedCodeConfig: Stack.HTML_TAILWIND,
+      }));
+    }
+  }, [settings.generatedCodeConfig, setSettings]);
 
   const takeScreenshot = async (): Promise<string> => {
     const iframeElement = document.querySelector(
@@ -98,29 +120,94 @@ function App() {
     setGeneratedCode("");
     setReferenceImages([]);
     setExecutionConsole([]);
-    setHistory([]);
+    setUpdateInstruction("");
+    setIsImportedFromCode(false);
+    setAppHistory([]);
+    setCurrentVersion(null);
+    setShouldIncludeResultImage(false);
   };
 
-  const stop = () => {
+  const cancelCodeGeneration = () => {
     wsRef.current?.close?.(USER_CLOSE_WEB_SOCKET_CODE);
     // make sure stop can correct the state even if the websocket is already closed
-    setAppState(AppState.CODE_READY);
+    cancelCodeGenerationAndReset();
   };
 
-  function doGenerateCode(params: CodeGenerationParams) {
+  const cancelCodeGenerationAndReset = () => {
+    // When this is the first version, reset the entire app state
+    if (currentVersion === null) {
+      reset();
+    } else {
+      // Otherwise, revert to the last version
+      setGeneratedCode(appHistory[currentVersion].code);
+      setAppState(AppState.CODE_READY);
+    }
+  };
+
+  function doGenerateCode(
+    params: CodeGenerationParams,
+    parentVersion: number | null
+  ) {
     setExecutionConsole([]);
     setAppState(AppState.CODING);
 
     // Merge settings with params
-    const updatedParams = { ...params, ...settings, outputSettings };
+    const updatedParams = { ...params, ...settings };
 
     generateCode(
       wsRef,
       updatedParams,
+      // On change
       (token) => setGeneratedCode((prev) => prev + token),
-      (code) => setGeneratedCode(code),
+      // On set code
+      (code) => {
+        setGeneratedCode(code);
+        if (params.generationType === "create") {
+          setAppHistory([
+            {
+              type: "ai_create",
+              parentIndex: null,
+              code,
+              inputs: { image_url: referenceImages[0] },
+            },
+          ]);
+          setCurrentVersion(0);
+        } else {
+          setAppHistory((prev) => {
+            // Validate parent version
+            if (parentVersion === null) {
+              toast.error(
+                "No parent version set. Contact support or open a Github issue."
+              );
+              return prev;
+            }
+
+            const newHistory: History = [
+              ...prev,
+              {
+                type: "ai_edit",
+                parentIndex: parentVersion,
+                code,
+                inputs: {
+                  prompt: updateInstruction,
+                },
+              },
+            ];
+            setCurrentVersion(newHistory.length - 1);
+            return newHistory;
+          });
+        }
+      },
+      // On status update
       (line) => setExecutionConsole((prev) => [...prev, line]),
-      () => setAppState(AppState.CODE_READY)
+      // On cancel
+      () => {
+        cancelCodeGenerationAndReset();
+      },
+      // On complete
+      () => {
+        setAppState(AppState.CODE_READY);
+      }
     );
   }
 
@@ -131,33 +218,61 @@ function App() {
 
     setReferenceImages(referenceImages);
     if (referenceImages.length > 0) {
-      doGenerateCode({
-        generationType: "create",
-        image: referenceImages[0],
-      });
+      doGenerateCode(
+        {
+          generationType: "create",
+          image: referenceImages[0],
+        },
+        currentVersion
+      );
     }
   }
 
   // Subsequent updates
   async function doUpdate() {
-    const updatedHistory = [...history, generatedCode, updateInstruction];
-    if (shouldIncludeResultImage) {
-      const resultImage = await takeScreenshot();
-      doGenerateCode({
-        generationType: "update",
-        image: referenceImages[0],
-        resultImage: resultImage,
-        history: updatedHistory,
-      });
-    } else {
-      doGenerateCode({
-        generationType: "update",
-        image: referenceImages[0],
-        history: updatedHistory,
-      });
+    if (currentVersion === null) {
+      toast.error(
+        "No current version set. Contact support or open a Github issue."
+      );
+      return;
     }
 
-    setHistory(updatedHistory);
+    let historyTree;
+    try {
+      historyTree = extractHistoryTree(appHistory, currentVersion);
+    } catch {
+      toast.error(
+        "Version history is invalid. This shouldn't happen. Please contact support or open a Github issue."
+      );
+      return;
+    }
+
+    const updatedHistory = [...historyTree, updateInstruction];
+
+    if (shouldIncludeResultImage) {
+      const resultImage = await takeScreenshot();
+      doGenerateCode(
+        {
+          generationType: "update",
+          image: referenceImages[0],
+          resultImage: resultImage,
+          history: updatedHistory,
+          isImportedFromCode,
+        },
+        currentVersion
+      );
+    } else {
+      doGenerateCode(
+        {
+          generationType: "update",
+          image: referenceImages[0],
+          history: updatedHistory,
+          isImportedFromCode,
+        },
+        currentVersion
+      );
+    }
+
     setGeneratedCode("");
     setUpdateInstruction("");
   }
@@ -169,36 +284,67 @@ function App() {
     }));
   };
 
+  function setStack(stack: Stack) {
+    setSettings((prev) => ({
+      ...prev,
+      generatedCodeConfig: stack,
+    }));
+  }
+
+  function importFromCode(code: string, stack: Stack) {
+    setIsImportedFromCode(true);
+
+    // Set up this project
+    setGeneratedCode(code);
+    setStack(stack);
+    setAppHistory([
+      {
+        type: "code_create",
+        parentIndex: null,
+        code,
+        inputs: { code },
+      },
+    ]);
+    setCurrentVersion(0);
+
+    setAppState(AppState.CODE_READY);
+  }
+
   return (
-    <div className="mt-2">
-      {IS_RUNNING_ON_CLOUD && <PicoBadge />}
+    <div className="mt-2 dark:bg-black dark:text-white">
+      {IS_RUNNING_ON_CLOUD && <PicoBadge settings={settings} />}
       {IS_RUNNING_ON_CLOUD && (
         <TermsOfServiceDialog
           open={!settings.isTermOfServiceAccepted}
           onOpenChange={handleTermDialogOpenChange}
         />
       )}
-
-      <div className="hidden lg:fixed lg:inset-y-0 lg:z-50 lg:flex lg:w-96 lg:flex-col">
-        <div className="flex grow flex-col gap-y-2 overflow-y-auto border-r border-gray-200 bg-white px-6">
-          <div className="flex items-center justify-between mt-10">
+      <div className="lg:fixed lg:inset-y-0 lg:z-40 lg:flex lg:w-96 lg:flex-col">
+        <div className="flex grow flex-col gap-y-2 overflow-y-auto border-r border-gray-200 bg-white px-6 dark:bg-zinc-950 dark:text-white">
+          <div className="flex items-center justify-between mt-10 mb-2">
             <h1 className="text-2xl ">Screenshot to Code</h1>
             <SettingsDialog settings={settings} setSettings={setSettings} />
           </div>
-          {appState === AppState.INITIAL && (
-            <h2 className="text-sm text-gray-500 mb-2">
-              Drag & drop a screenshot to get started.
-            </h2>
-          )}
 
-          {appState === AppState.INITIAL && (
-            <OutputSettingsSection
-              outputSettings={outputSettings}
-              setOutputSettings={setOutputSettings}
-            />
-          )}
+          <OutputSettingsSection
+            stack={settings.generatedCodeConfig}
+            setStack={(config) => setStack(config)}
+            shouldDisableUpdates={
+              appState === AppState.CODING || appState === AppState.CODE_READY
+            }
+          />
 
-          {IS_RUNNING_ON_CLOUD && !settings.openAiApiKey && <OnboardingNote />}
+          {IS_RUNNING_ON_CLOUD &&
+            !(settings.openAiApiKey || settings.accessCode) && (
+              <OnboardingNote />
+            )}
+
+          {IS_OPENAI_DOWN && (
+            <div className="bg-black text-white dark:bg-white dark:text-black p-3 rounded">
+              OpenAI API is currently down. Try back in 30 minutes or later. We
+              apologize for the inconvenience.
+            </div>
+          )}
 
           {(appState === AppState.CODING ||
             appState === AppState.CODE_READY) && (
@@ -211,8 +357,11 @@ function App() {
                     {executionConsole.slice(-1)[0]}
                   </div>
                   <div className="flex mt-4 w-full">
-                    <Button onClick={stop} className="w-full">
-                      Stop
+                    <Button
+                      onClick={cancelCodeGeneration}
+                      className="w-full dark:text-white dark:bg-gray-700"
+                    >
+                      Cancel
                     </Button>
                   </div>
                   <CodePreview code={generatedCode} />
@@ -228,26 +377,32 @@ function App() {
                       value={updateInstruction}
                     />
                     <div className="flex justify-between items-center gap-x-2">
-                      <div className="font-500 text-xs text-slate-700">
+                      <div className="font-500 text-xs text-slate-700 dark:text-white">
                         Include screenshot of current version?
                       </div>
                       <Switch
                         checked={shouldIncludeResultImage}
                         onCheckedChange={setShouldIncludeResultImage}
+                        className="dark:bg-gray-700"
                       />
                     </div>
-                    <Button onClick={doUpdate}>Update</Button>
+                    <Button
+                      onClick={doUpdate}
+                      className="dark:text-white dark:bg-gray-700"
+                    >
+                      Update
+                    </Button>
                   </div>
                   <div className="flex items-center gap-x-2 mt-2">
                     <Button
                       onClick={downloadCode}
-                      className="flex items-center gap-x-2"
+                      className="flex items-center gap-x-2 dark:text-white dark:bg-gray-700"
                     >
                       <FaDownload /> Download
                     </Button>
                     <Button
                       onClick={reset}
-                      className="flex items-center gap-x-2"
+                      className="flex items-center gap-x-2 dark:text-white dark:bg-gray-700"
                     >
                       <FaUndo />
                       Reset
@@ -258,22 +413,24 @@ function App() {
 
               {/* Reference image display */}
               <div className="flex gap-x-2 mt-2">
-                <div className="flex flex-col">
-                  <div
-                    className={classNames({
-                      "scanning relative": appState === AppState.CODING,
-                    })}
-                  >
-                    <img
-                      className="w-[340px] border border-gray-200 rounded-md"
-                      src={referenceImages[0]}
-                      alt="Reference"
-                    />
+                {referenceImages.length > 0 && (
+                  <div className="flex flex-col">
+                    <div
+                      className={classNames({
+                        "scanning relative": appState === AppState.CODING,
+                      })}
+                    >
+                      <img
+                        className="w-[340px] border border-gray-200 rounded-md"
+                        src={referenceImages[0]}
+                        alt="Reference"
+                      />
+                    </div>
+                    <div className="text-gray-400 uppercase text-sm text-center mt-1">
+                      Original Screenshot
+                    </div>
                   </div>
-                  <div className="text-gray-400 uppercase text-sm text-center mt-1">
-                    Original Screenshot
-                  </div>
-                </div>
+                )}
                 <div className="bg-gray-400 px-4 py-2 rounded text-sm hidden">
                   <h2 className="text-lg mb-4 border-b border-gray-800">
                     Console
@@ -290,6 +447,23 @@ function App() {
               </div>
             </>
           )}
+          {
+            <HistoryDisplay
+              history={appHistory}
+              currentVersion={currentVersion}
+              revertToVersion={(index) => {
+                if (
+                  index < 0 ||
+                  index >= appHistory.length ||
+                  !appHistory[index]
+                )
+                  return;
+                setCurrentVersion(index);
+                setGeneratedCode(appHistory[index].code);
+              }}
+              shouldDisableReverts={appState === AppState.CODING}
+            />
+          }
         </div>
       </div>
 
@@ -301,6 +475,7 @@ function App() {
               doCreate={doCreate}
               screenshotOneApiKey={settings.screenshotOneApiKey}
             />
+            <ImportCodeSection importFromCode={importFromCode} />
           </div>
         )}
 
